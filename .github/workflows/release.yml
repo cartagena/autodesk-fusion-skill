@@ -1,0 +1,69 @@
+name: Tag and release skill on PR merge
+
+# Runs whenever a pull request targeting main is closed. The job itself
+# only proceeds if it was actually merged (not just closed unmerged).
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+  # Lets you trigger a run manually from the Actions tab, e.g. to re-cut
+  # a release without merging a new PR.
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to push the new tag and create the release
+
+env:
+  SKILL_NAME: autodesk-fusion-api   # must match the `name:` in SKILL.md; used for the release asset filename
+
+jobs:
+  tag-and-release:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history + tags, needed to compute the next version
+
+      - name: Validate SKILL.md exists
+        run: |
+          if [ ! -f "SKILL.md" ]; then
+            echo "::error::SKILL.md not found at repo root."
+            exit 1
+          fi
+
+      # Auto-bumps and pushes a new vX.Y.Z tag based on the latest existing tag.
+      # Defaults to a patch bump on every merge. To bump minor or major instead,
+      # include #minor or #major anywhere in the merge commit message.
+      # Note: @v1 is this action's own recommended pin — it's a floating tag the
+      # maintainer moves to point at the latest release, not a stale major version.
+      - name: Bump version and push tag
+        id: tag_version
+        uses: anothrNick/github-tag-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WITH_V: true
+          DEFAULT_BUMP: patch
+          RELEASE_BRANCHES: main
+
+      # The skill files live at the repo root (SKILL.md, references/), not in a
+      # subfolder named after the skill — so stage just those into a folder named
+      # after SKILL_NAME before zipping. This also keeps repo scaffolding (.git,
+      # .github, README.md, LICENSE, .gitignore) out of the installed skill.
+      - name: Package skill as .skill (zip)
+        run: |
+          staging="/tmp/${SKILL_NAME}"
+          mkdir -p "${staging}"
+          cp -r SKILL.md references "${staging}/"
+          ( cd /tmp && zip -r "${GITHUB_WORKSPACE}/${SKILL_NAME}.skill" "${SKILL_NAME}" )
+          ls -la "${SKILL_NAME}.skill"
+
+      - name: Create release and upload asset
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.tag_version.outputs.new_tag }}
+          name: ${{ steps.tag_version.outputs.new_tag }}
+          files: ${{ env.SKILL_NAME }}.skill
+          generate_release_notes: true
